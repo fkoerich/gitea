@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"code.gitea.io/gitea/modules/markup"
 	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/util"
 
@@ -23,16 +24,19 @@ func TestRender_StandardLinks(t *testing.T) {
 	setting.AppSubURL = AppSubURL
 
 	test := func(input, expected string) {
-		buffer := RenderString(input, setting.AppSubURL, nil, false)
+		buffer, err := RenderString(&markup.RenderContext{
+			URLPrefix: setting.AppSubURL,
+		}, input)
+		assert.NoError(t, err)
 		assert.Equal(t, strings.TrimSpace(expected), strings.TrimSpace(buffer))
 	}
 
-	googleRendered := "<p>\n<a href=\"https://google.com/\" title=\"https://google.com/\">https://google.com/</a>\n</p>"
+	googleRendered := "<p><a href=\"https://google.com/\" title=\"https://google.com/\">https://google.com/</a></p>"
 	test("[[https://google.com/]]", googleRendered)
 
 	lnk := util.URLJoin(AppSubURL, "WikiPage")
 	test("[[WikiPage][WikiPage]]",
-		"<p>\n<a href=\""+lnk+"\" title=\"WikiPage\">WikiPage</a>\n</p>")
+		"<p><a href=\""+lnk+"\" title=\"WikiPage\">WikiPage</a></p>")
 }
 
 func TestRender_Images(t *testing.T) {
@@ -40,7 +44,10 @@ func TestRender_Images(t *testing.T) {
 	setting.AppSubURL = AppSubURL
 
 	test := func(input, expected string) {
-		buffer := RenderString(input, setting.AppSubURL, nil, false)
+		buffer, err := RenderString(&markup.RenderContext{
+			URLPrefix: setting.AppSubURL,
+		}, input)
+		assert.NoError(t, err)
 		assert.Equal(t, strings.TrimSpace(expected), strings.TrimSpace(buffer))
 	}
 
@@ -48,5 +55,5 @@ func TestRender_Images(t *testing.T) {
 	result := util.URLJoin(AppSubURL, url)
 
 	test("[[file:"+url+"]]",
-		"<p>\n<img src=\""+result+"\" alt=\""+result+"\" title=\""+result+"\" />\n</p>")
+		"<p><img src=\""+result+"\" alt=\""+result+"\" title=\""+result+"\" /></p>")
 }

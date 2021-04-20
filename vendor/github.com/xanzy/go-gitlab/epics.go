@@ -1,7 +1,24 @@
+//
+// Copyright 2021, Sander van Harmelen
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
 package gitlab
 
 import (
 	"fmt"
+	"net/http"
 	"time"
 )
 
@@ -30,16 +47,12 @@ type Epic struct {
 	ID                      int         `json:"id"`
 	IID                     int         `json:"iid"`
 	GroupID                 int         `json:"group_id"`
-	Author                  *EpicAuthor `json:"author"`
+	ParentID                int         `json:"parent_id"`
+	Title                   string      `json:"title"`
 	Description             string      `json:"description"`
 	State                   string      `json:"state"`
-	Upvotes                 int         `json:"upvotes"`
-	Downvotes               int         `json:"downvotes"`
-	Labels                  []string    `json:"labels"`
-	Title                   string      `json:"title"`
-	UpdatedAt               *time.Time  `json:"updated_at"`
-	CreatedAt               *time.Time  `json:"created_at"`
-	UserNotesCount          int         `json:"user_notes_count"`
+	WebURL                  string      `json:"web_url"`
+	Author                  *EpicAuthor `json:"author"`
 	StartDate               *ISOTime    `json:"start_date"`
 	StartDateIsFixed        bool        `json:"start_date_is_fixed"`
 	StartDateFixed          *ISOTime    `json:"start_date_fixed"`
@@ -48,6 +61,13 @@ type Epic struct {
 	DueDateIsFixed          bool        `json:"due_date_is_fixed"`
 	DueDateFixed            *ISOTime    `json:"due_date_fixed"`
 	DueDateFromMilestones   *ISOTime    `json:"due_date_from_milestones"`
+	CreatedAt               *time.Time  `json:"created_at"`
+	UpdatedAt               *time.Time  `json:"updated_at"`
+	Labels                  []string    `json:"labels"`
+	Upvotes                 int         `json:"upvotes"`
+	Downvotes               int         `json:"downvotes"`
+	UserNotesCount          int         `json:"user_notes_count"`
+	URL                     string      `json:"url"`
 }
 
 func (e Epic) String() string {
@@ -59,12 +79,20 @@ func (e Epic) String() string {
 // GitLab API docs: https://docs.gitlab.com/ee/api/epics.html#list-epics-for-a-group
 type ListGroupEpicsOptions struct {
 	ListOptions
-	State    *string `url:"state,omitempty" json:"state,omitempty"`
-	Labels   Labels  `url:"labels,comma,omitempty" json:"labels,omitempty"`
-	AuthorID *int    `url:"author_id,omitempty" json:"author_id,omitempty"`
-	OrderBy  *string `url:"order_by,omitempty" json:"order_by,omitempty"`
-	Sort     *string `url:"sort,omitempty" json:"sort,omitempty"`
-	Search   *string `url:"search,omitempty" json:"search,omitempty"`
+	AuthorID                *int       `url:"author_id,omitempty" json:"author_id,omitempty"`
+	Labels                  Labels     `url:"labels,comma,omitempty" json:"labels,omitempty"`
+	WithLabelDetails        *bool      `url:"with_labels_details,omitempty" json:"with_labels_details,omitempty"`
+	OrderBy                 *string    `url:"order_by,omitempty" json:"order_by,omitempty"`
+	Sort                    *string    `url:"sort,omitempty" json:"sort,omitempty"`
+	Search                  *string    `url:"search,omitempty" json:"search,omitempty"`
+	State                   *string    `url:"state,omitempty" json:"state,omitempty"`
+	CreatedAfter            *time.Time `url:"created_after,omitempty" json:"created_after,omitempty"`
+	CreatedBefore           *time.Time `url:"created_before,omitempty" json:"created_before,omitempty"`
+	UpdatedAfter            *time.Time `url:"updated_after,omitempty" json:"updated_after,omitempty"`
+	UpdatedBefore           *time.Time `url:"updated_before,omitempty" json:"updated_before,omitempty"`
+	IncludeAncestorGroups   *bool      `url:"include_ancestor_groups,omitempty" json:"include_ancestor_groups,omitempty"`
+	IncludeDescendantGroups *bool      `url:"include_descendant_groups,omitempty" json:"include_descendant_groups,omitempty"`
+	MyReactionEmoji         *string    `url:"my_reaction_emoji,omitempty" json:"my_reaction_emoji,omitempty"`
 }
 
 // ListGroupEpics gets a list of group epics. This function accepts pagination
@@ -78,7 +106,7 @@ func (s *EpicsService) ListGroupEpics(gid interface{}, opt *ListGroupEpicsOption
 	}
 	u := fmt.Sprintf("groups/%s/epics", pathEscape(group))
 
-	req, err := s.client.NewRequest("GET", u, opt, options)
+	req, err := s.client.NewRequest(http.MethodGet, u, opt, options)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -102,13 +130,37 @@ func (s *EpicsService) GetEpic(gid interface{}, epic int, options ...RequestOpti
 	}
 	u := fmt.Sprintf("groups/%s/epics/%d", pathEscape(group), epic)
 
-	req, err := s.client.NewRequest("GET", u, nil, options)
+	req, err := s.client.NewRequest(http.MethodGet, u, nil, options)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	e := new(Epic)
 	resp, err := s.client.Do(req, e)
+	if err != nil {
+		return nil, resp, err
+	}
+
+	return e, resp, err
+}
+
+// GetEpicLinks gets all child epics of an epic.
+//
+// GitLab API docs: https://docs.gitlab.com/ee/api/epic_links.html
+func (s *EpicsService) GetEpicLinks(gid interface{}, epic int, options ...RequestOptionFunc) ([]*Epic, *Response, error) {
+	group, err := parseID(gid)
+	if err != nil {
+		return nil, nil, err
+	}
+	u := fmt.Sprintf("groups/%s/epics/%d/epics", pathEscape(group), epic)
+
+	req, err := s.client.NewRequest(http.MethodGet, u, nil, options)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var e []*Epic
+	resp, err := s.client.Do(req, &e)
 	if err != nil {
 		return nil, resp, err
 	}
@@ -139,7 +191,7 @@ func (s *EpicsService) CreateEpic(gid interface{}, opt *CreateEpicOptions, optio
 	}
 	u := fmt.Sprintf("groups/%s/epics", pathEscape(group))
 
-	req, err := s.client.NewRequest("POST", u, opt, options)
+	req, err := s.client.NewRequest(http.MethodPost, u, opt, options)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -178,7 +230,7 @@ func (s *EpicsService) UpdateEpic(gid interface{}, epic int, opt *UpdateEpicOpti
 	}
 	u := fmt.Sprintf("groups/%s/epics/%d", pathEscape(group), epic)
 
-	req, err := s.client.NewRequest("PUT", u, opt, options)
+	req, err := s.client.NewRequest(http.MethodPut, u, opt, options)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -202,7 +254,7 @@ func (s *EpicsService) DeleteEpic(gid interface{}, epic int, options ...RequestO
 	}
 	u := fmt.Sprintf("groups/%s/epics/%d", pathEscape(group), epic)
 
-	req, err := s.client.NewRequest("DELETE", u, nil, options)
+	req, err := s.client.NewRequest(http.MethodDelete, u, nil, options)
 	if err != nil {
 		return nil, err
 	}

@@ -5,16 +5,15 @@
 package migrations
 
 import (
-	"os"
-	"path"
+	"path/filepath"
 
 	"code.gitea.io/gitea/modules/setting"
+	"code.gitea.io/gitea/modules/util"
 
 	"xorm.io/xorm"
 )
 
 func deleteOrphanedAttachments(x *xorm.Engine) error {
-
 	type Attachment struct {
 		ID        int64  `xorm:"pk autoincr"`
 		UUID      string `xorm:"uuid UNIQUE"`
@@ -23,16 +22,10 @@ func deleteOrphanedAttachments(x *xorm.Engine) error {
 		CommentID int64
 	}
 
-	// AttachmentLocalPath returns where attachment is stored in local file
-	// system based on given UUID.
-	AttachmentLocalPath := func(uuid string) string {
-		return path.Join(setting.AttachmentPath, uuid[0:1], uuid[1:2], uuid)
-	}
-
 	sess := x.NewSession()
 	defer sess.Close()
 
-	var limit = setting.Database.IterateBufferSize
+	limit := setting.Database.IterateBufferSize
 	if limit <= 0 {
 		limit = 50
 	}
@@ -49,16 +42,19 @@ func deleteOrphanedAttachments(x *xorm.Engine) error {
 			return nil
 		}
 
-		var ids = make([]int64, 0, limit)
+		ids := make([]int64, 0, limit)
 		for _, attachment := range attachements {
 			ids = append(ids, attachment.ID)
 		}
-		if _, err := sess.In("id", ids).Delete(new(Attachment)); err != nil {
-			return err
+		if len(ids) > 0 {
+			if _, err := sess.In("id", ids).Delete(new(Attachment)); err != nil {
+				return err
+			}
 		}
 
 		for _, attachment := range attachements {
-			if err := os.RemoveAll(AttachmentLocalPath(attachment.UUID)); err != nil {
+			uuid := attachment.UUID
+			if err := util.RemoveAll(filepath.Join(setting.Attachment.Path, uuid[0:1], uuid[1:2], uuid)); err != nil {
 				return err
 			}
 		}

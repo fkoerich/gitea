@@ -2,12 +2,10 @@
 
 A GitLab API client enabling Go programs to interact with GitLab in a simple and uniform way
 
-[![Build Status](https://travis-ci.org/xanzy/go-gitlab.svg?branch=master)](https://travis-ci.org/xanzy/go-gitlab)
-[![GitHub license](https://img.shields.io/github/license/xanzy/go-gitlab.svg)](https://github.com/xanzy/go-gitlab/blob/master/LICENSE)
+[![Build Status](https://github.com/xanzy/go-gitlab/workflows/Lint%20and%20Test/badge.svg)](https://github.com/xanzy/go-gitlab/actions?workflow=Lint%20and%20Test)
 [![Sourcegraph](https://sourcegraph.com/github.com/xanzy/go-gitlab/-/badge.svg)](https://sourcegraph.com/github.com/xanzy/go-gitlab?badge)
 [![GoDoc](https://godoc.org/github.com/xanzy/go-gitlab?status.svg)](https://godoc.org/github.com/xanzy/go-gitlab)
 [![Go Report Card](https://goreportcard.com/badge/github.com/xanzy/go-gitlab)](https://goreportcard.com/report/github.com/xanzy/go-gitlab)
-[![GitHub issues](https://img.shields.io/github/issues/xanzy/go-gitlab.svg)](https://github.com/xanzy/go-gitlab/issues)
 
 ## NOTE
 
@@ -42,8 +40,11 @@ to add new and/or missing endpoints. Currently the following services are suppor
 - [x] Group Issue Boards
 - [x] Group Members
 - [x] Group Milestones
+- [x] Group Wikis
 - [x] Group-Level Variables
 - [x] Groups
+- [x] Instance Clusters
+- [x] Invites
 - [x] Issue Boards
 - [x] Issues
 - [x] Jobs
@@ -70,6 +71,7 @@ to add new and/or missing endpoints. Currently the following services are suppor
 - [x] Project-Level Variables
 - [x] Projects (including setting Webhooks)
 - [x] Protected Branches
+- [x] Protected Environments
 - [x] Protected Tags
 - [x] Repositories
 - [x] Repository Files
@@ -108,7 +110,7 @@ There are a few `With...` option functions that can be used to customize
 the API client. For example, to set a custom base URL:
 
 ```go
-git, err := gitlab.NewClient("yourtokengoeshere", WithBaseURL("https://git.mydomain.com/api/v4"))
+git, err := gitlab.NewClient("yourtokengoeshere", gitlab.WithBaseURL("https://git.mydomain.com/api/v4"))
 if err != nil {
   log.Fatalf("Failed to create client: %v", err)
 }
@@ -161,7 +163,7 @@ func main() {
 	s := &gitlab.CreateProjectSnippetOptions{
 		Title:           gitlab.String("Dummy Snippet"),
 		FileName:        gitlab.String("snippet.go"),
-		Code:            gitlab.String("package main...."),
+		Content:         gitlab.String("package main...."),
 		Visibility:      gitlab.Visibility(gitlab.PublicVisibility),
 	}
 	_, _, err = git.ProjectSnippets.CreateSnippet(project.ID, s)

@@ -1,17 +1,20 @@
-const fastGlob = require('fast-glob');
-const wrapAnsi = require('wrap-ansi');
-const CssNanoPlugin = require('cssnano-webpack-plugin');
-const FixStyleOnlyEntriesPlugin = require('webpack-fix-style-only-entries');
-const MiniCssExtractPlugin = require('mini-css-extract-plugin');
-const MonacoWebpackPlugin = require('monaco-editor-webpack-plugin');
-const PostCSSPresetEnv = require('postcss-preset-env');
-const TerserPlugin = require('terser-webpack-plugin');
-const VueLoaderPlugin = require('vue-loader/lib/plugin');
-const {statSync} = require('fs');
-const {resolve, parse} = require('path');
-const {LicenseWebpackPlugin} = require('license-webpack-plugin');
-const {SourceMapDevToolPlugin} = require('webpack');
+import fastGlob from 'fast-glob';
+import wrapAnsi from 'wrap-ansi';
+import AddAssetPlugin from 'add-asset-webpack-plugin';
+import CssMinimizerPlugin from 'css-minimizer-webpack-plugin';
+import LicenseCheckerWebpackPlugin from 'license-checker-webpack-plugin';
+import MiniCssExtractPlugin from 'mini-css-extract-plugin';
+import MonacoWebpackPlugin from 'monaco-editor-webpack-plugin';
+import VueLoader from 'vue-loader';
+import EsBuildLoader from 'esbuild-loader';
+import {resolve, parse, dirname} from 'path';
+import webpack from 'webpack';
+import {fileURLToPath} from 'url';
 
+const {VueLoaderPlugin} = VueLoader;
+const {ESBuildMinifyPlugin} = EsBuildLoader;
+const {SourceMapDevToolPlugin} = webpack;
+const __dirname = dirname(fileURLToPath(import.meta.url));
 const glob = (pattern) => fastGlob.sync(pattern, {cwd: __dirname, absolute: true});
 
 const themes = {};
@@ -30,14 +33,14 @@ const filterCssImport = (url, ...args) => {
     if (/(eot|ttf|otf|woff|svg)$/.test(importedFile)) return false;
   }
 
-  if (cssFile.includes('font-awesome')) {
-    if (/(eot|ttf|otf|woff|svg)$/.test(importedFile)) return false;
+  if (cssFile.includes('font-awesome') && /(eot|ttf|otf|woff|svg)$/.test(importedFile)) {
+    return false;
   }
 
   return true;
 };
 
-module.exports = {
+export default {
   mode: isProduction ? 'production' : 'development',
   entry: {
     index: [
@@ -49,12 +52,17 @@ module.exports = {
     ],
     swagger: [
       resolve(__dirname, 'web_src/js/standalone/swagger.js'),
+      resolve(__dirname, 'web_src/less/standalone/swagger.less'),
     ],
     serviceworker: [
       resolve(__dirname, 'web_src/js/serviceworker.js'),
     ],
     'eventsource.sharedworker': [
       resolve(__dirname, 'web_src/js/features/eventsource.sharedworker.js'),
+    ],
+    'easymde': [
+      resolve(__dirname, 'web_src/js/easymde.js'),
+      resolve(__dirname, 'node_modules/easymde/dist/easymde.min.css'),
     ],
     ...themes,
   },
@@ -66,29 +74,28 @@ module.exports = {
       // we have to put it in / instead of /js/
       return chunk.name === 'serviceworker' ? '[name].js' : 'js/[name].js';
     },
-    chunkFilename: 'js/[name].js',
+    chunkFilename: ({chunk}) => {
+      const language = (/monaco.*languages?_.+?_(.+?)_/.exec(chunk.id) || [])[1];
+      return language ? `js/monaco-language-${language.toLowerCase()}.js` : `js/[name].js`;
+    },
   },
   optimization: {
     minimize: isProduction,
     minimizer: [
-      new TerserPlugin({
-        sourceMap: true,
-        extractComments: false,
-        terserOptions: {
-          output: {
-            comments: false,
-          },
-        },
+      new ESBuildMinifyPlugin({
+        target: 'es2015',
+        minify: true
       }),
-      new CssNanoPlugin({
+      new CssMinimizerPlugin({
         sourceMap: true,
-        cssnanoOptions: {
+        minimizerOptions: {
           preset: [
             'default',
             {
               discardComments: {
                 removeAll: true,
               },
+              colormin: false,
             },
           ],
         },
@@ -98,6 +105,8 @@ module.exports = {
       chunks: 'async',
       name: (_, chunks) => chunks.map((item) => item.name).join('-'),
     },
+    moduleIds: 'named',
+    chunkIds: 'named',
   },
   module: {
     rules: [
@@ -113,9 +122,7 @@ module.exports = {
           {
             loader: 'worker-loader',
             options: {
-              name: '[name].js',
-              inline: true,
-              fallback: false,
+              inline: 'no-fallback',
             },
           },
         ],
@@ -125,37 +132,9 @@ module.exports = {
         exclude: /node_modules/,
         use: [
           {
-            loader: 'babel-loader',
+            loader: 'esbuild-loader',
             options: {
-              cacheDirectory: true,
-              cacheCompression: false,
-              cacheIdentifier: [
-                resolve(__dirname, 'package.json'),
-                resolve(__dirname, 'package-lock.json'),
-                resolve(__dirname, 'webpack.config.js'),
-              ].map((path) => statSync(path).mtime.getTime()).join(':'),
-              sourceMaps: true,
-              presets: [
-                [
-                  '@babel/preset-env',
-                  {
-                    useBuiltIns: 'usage',
-                    corejs: 3,
-                  },
-                ],
-              ],
-              plugins: [
-                [
-                  '@babel/plugin-transform-runtime',
-                  {
-                    regenerator: true,
-                  }
-                ],
-                '@babel/plugin-proposal-object-rest-spread',
-              ],
-              generatorOpts: {
-                compact: false,
-              },
+              target: 'es2015'
             },
           },
         ],
@@ -169,19 +148,9 @@ module.exports = {
           {
             loader: 'css-loader',
             options: {
-              importLoaders: 1,
+              sourceMap: true,
               url: filterCssImport,
               import: filterCssImport,
-              sourceMap: true,
-            },
-          },
-          {
-            loader: 'postcss-loader',
-            options: {
-              plugins: () => [
-                PostCSSPresetEnv(),
-              ],
-              sourceMap: true,
             },
           },
         ],
@@ -195,19 +164,10 @@ module.exports = {
           {
             loader: 'css-loader',
             options: {
-              importLoaders: 2,
+              sourceMap: true,
+              importLoaders: 1,
               url: filterCssImport,
               import: filterCssImport,
-              sourceMap: true,
-            },
-          },
-          {
-            loader: 'postcss-loader',
-            options: {
-              plugins: () => [
-                PostCSSPresetEnv(),
-              ],
-              sourceMap: true,
             },
           },
           {
@@ -221,47 +181,28 @@ module.exports = {
       {
         test: /\.svg$/,
         include: resolve(__dirname, 'public/img/svg'),
-        use: [
-          {
-            loader: 'raw-loader',
-          },
-        ],
+        type: 'asset/source',
       },
       {
         test: /\.(ttf|woff2?)$/,
-        use: [
-          {
-            loader: 'file-loader',
-            options: {
-              name: '[name].[ext]',
-              outputPath: 'fonts/',
-              publicPath: (url) => `../fonts/${url}`, // required to remove css/ path segment
-            },
-          },
-        ],
+        type: 'asset/resource',
+        generator: {
+          filename: 'fonts/[name][ext]',
+          publicPath: '../', // required to remove css/ path segment
+        }
       },
       {
         test: /\.png$/i,
-        use: [
-          {
-            loader: 'file-loader',
-            options: {
-              name: '[name].[ext]',
-              outputPath: 'img/webpack/',
-              publicPath: (url) => `../img/webpack/${url}`, // required to remove css/ path segment
-            },
-          },
-        ],
+        type: 'asset/resource',
+        generator: {
+          filename: 'img/webpack/[name][ext]',
+          publicPath: '../', // required to remove css/ path segment
+        }
       },
     ],
   },
   plugins: [
     new VueLoaderPlugin(),
-    // avoid generating useless js output files for css--only chunks
-    new FixStyleOnlyEntriesPlugin({
-      extensions: ['less', 'scss', 'css'],
-      silent: true,
-    }),
     new MiniCssExtractPlugin({
       filename: 'css/[name].css',
       chunkFilename: 'css/[name].css',
@@ -276,28 +217,20 @@ module.exports = {
     new MonacoWebpackPlugin({
       filename: 'js/monaco-[name].worker.js',
     }),
-    new LicenseWebpackPlugin({
+    isProduction ? new LicenseCheckerWebpackPlugin({
       outputFilename: 'js/licenses.txt',
-      perChunkOutput: false,
-      addBanner: false,
-      skipChildCompilers: true,
-      modulesDirectories: [
-        resolve(__dirname, 'node_modules'),
-      ],
-      renderLicenses: (modules) => {
+      outputWriter: ({dependencies}) => {
         const line = '-'.repeat(80);
-        return modules.map((module) => {
-          const {name, version} = module.packageJson;
-          const {licenseId, licenseText} = module;
+        return dependencies.map((module) => {
+          const {name, version, licenseName, licenseText} = module;
           const body = wrapAnsi(licenseText || '', 80);
-          return `${line}\n${name}@${version} - ${licenseId}\n${line}\n${body}`;
+          return `${line}\n${name}@${version} - ${licenseName}\n${line}\n${body}`;
         }).join('\n');
       },
-      stats: {
-        warnings: false,
-        errors: true,
+      override: {
+        'jquery.are-you-sure@*': {licenseName: 'MIT'},
       },
-    }),
+    }) : new AddAssetPlugin('js/licenses.txt', `Licenses are disabled during development`),
   ],
   performance: {
     hints: false,
@@ -316,11 +249,26 @@ module.exports = {
     ],
   },
   stats: {
+    assetsSort: 'name',
+    assetsSpace: Infinity,
+    cached: false,
+    cachedModules: false,
     children: false,
+    chunkModules: false,
+    chunkOrigins: false,
+    chunksSort: 'name',
+    colors: true,
+    entrypoints: false,
     excludeAssets: [
-      // exclude monaco's language chunks in stats output for brevity
-      // https://github.com/microsoft/monaco-editor-webpack-plugin/issues/113
-      /^js\/[0-9]+\.js$/,
-    ],
+      /^js\/monaco-language-.+\.js$/,
+      !isProduction && /^js\/licenses.txt$/,
+    ].filter((item) => !!item),
+    groupAssetsByChunk: false,
+    groupAssetsByEmitStatus: false,
+    groupAssetsByInfo: false,
+    groupModulesByAttributes: false,
+    modules: false,
+    reasons: false,
+    runtimeModules: false,
   },
 };

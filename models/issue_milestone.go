@@ -7,6 +7,7 @@ package models
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"code.gitea.io/gitea/modules/setting"
 	api "code.gitea.io/gitea/modules/structs"
@@ -31,11 +32,14 @@ type Milestone struct {
 	Completeness    int  // Percentage(1-100).
 	IsOverdue       bool `xorm:"-"`
 
-	DeadlineString string `xorm:"-"`
+	CreatedUnix    timeutil.TimeStamp `xorm:"INDEX created"`
+	UpdatedUnix    timeutil.TimeStamp `xorm:"INDEX updated"`
 	DeadlineUnix   timeutil.TimeStamp
 	ClosedDateUnix timeutil.TimeStamp
+	DeadlineString string `xorm:"-"`
 
 	TotalTrackedTime int64 `xorm:"-"`
+	TimeSinceUpdate  int64 `xorm:"-"`
 }
 
 // BeforeUpdate is invoked from XORM before updating this object.
@@ -50,14 +54,19 @@ func (m *Milestone) BeforeUpdate() {
 // AfterLoad is invoked from XORM after setting the value of a field of
 // this object.
 func (m *Milestone) AfterLoad() {
+	if !m.UpdatedUnix.IsZero() {
+		m.TimeSinceUpdate = time.Now().Unix() - m.UpdatedUnix.AsTime().Unix()
+	}
 	m.NumOpenIssues = m.NumIssues - m.NumClosedIssues
 	if m.DeadlineUnix.Year() == 9999 {
 		return
 	}
 
 	m.DeadlineString = m.DeadlineUnix.Format("2006-01-02")
-	if timeutil.TimeStampNow() >= m.DeadlineUnix {
-		m.IsOverdue = true
+	if m.IsClosed {
+		m.IsOverdue = m.ClosedDateUnix >= m.DeadlineUnix
+	} else {
+		m.IsOverdue = timeutil.TimeStampNow() >= m.DeadlineUnix
 	}
 }
 
@@ -183,6 +192,33 @@ func updateMilestoneCompleteness(e Engine, milestoneID int64) error {
 	return err
 }
 
+// ChangeMilestoneStatusByRepoIDAndID changes a milestone open/closed status if the milestone ID is in the repo.
+func ChangeMilestoneStatusByRepoIDAndID(repoID, milestoneID int64, isClosed bool) error {
+	sess := x.NewSession()
+	defer sess.Close()
+	if err := sess.Begin(); err != nil {
+		return err
+	}
+
+	m := &Milestone{
+		ID:     milestoneID,
+		RepoID: repoID,
+	}
+
+	has, err := sess.ID(milestoneID).Where("repo_id = ?", repoID).Get(m)
+	if err != nil {
+		return err
+	} else if !has {
+		return ErrMilestoneNotExist{ID: milestoneID, RepoID: repoID}
+	}
+
+	if err := changeMilestoneStatus(sess, m, isClosed); err != nil {
+		return err
+	}
+
+	return sess.Commit()
+}
+
 // ChangeMilestoneStatus changes the milestone open/closed status.
 func ChangeMilestoneStatus(m *Milestone, isClosed bool) (err error) {
 	sess := x.NewSession()
@@ -191,20 +227,27 @@ func ChangeMilestoneStatus(m *Milestone, isClosed bool) (err error) {
 		return err
 	}
 
+	if err := changeMilestoneStatus(sess, m, isClosed); err != nil {
+		return err
+	}
+
+	return sess.Commit()
+}
+
+func changeMilestoneStatus(e Engine, m *Milestone, isClosed bool) error {
 	m.IsClosed = isClosed
 	if isClosed {
 		m.ClosedDateUnix = timeutil.TimeStampNow()
 	}
 
-	if _, err := sess.ID(m.ID).Cols("is_closed", "closed_date_unix").Update(m); err != nil {
+	count, err := e.ID(m.ID).Where("repo_id = ? AND is_closed = ?", m.RepoID, !isClosed).Cols("is_closed", "closed_date_unix").Update(m)
+	if err != nil {
 		return err
 	}
-
-	if err := updateRepoMilestoneNum(sess, m.RepoID); err != nil {
-		return err
+	if count < 1 {
+		return nil
 	}
-
-	return sess.Commit()
+	return updateRepoMilestoneNum(e, m.RepoID)
 }
 
 func changeMilestoneAssign(e *xorm.Session, doer *User, issue *Issue, oldMilestoneID int64) error {
@@ -239,7 +282,7 @@ func changeMilestoneAssign(e *xorm.Session, doer *User, issue *Issue, oldMilesto
 			return err
 		}
 
-		var opts = &CreateCommentOptions{
+		opts := &CreateCommentOptions{
 			Type:           CommentTypeMilestone,
 			Doer:           doer,
 			Repo:           issue.Repo,
@@ -323,7 +366,7 @@ func DeleteMilestoneByRepoID(repoID, id int64) error {
 type MilestoneList []*Milestone
 
 func (milestones MilestoneList) getMilestoneIDs() []int64 {
-	var ids = make([]int64, 0, len(milestones))
+	ids := make([]int64, 0, len(milestones))
 	for _, ms := range milestones {
 		ids = append(ids, ms.ID)
 	}
@@ -383,9 +426,12 @@ func GetMilestones(opts GetMilestonesOption) (MilestoneList, error) {
 }
 
 // SearchMilestones search milestones
-func SearchMilestones(repoCond builder.Cond, page int, isClosed bool, sortType string) (MilestoneList, error) {
+func SearchMilestones(repoCond builder.Cond, page int, isClosed bool, sortType string, keyword string) (MilestoneList, error) {
 	miles := make([]*Milestone, 0, setting.UI.IssuePagingNum)
 	sess := x.Where("is_closed = ?", isClosed)
+	if len(keyword) > 0 {
+		sess = sess.And(builder.Like{"UPPER(name)", strings.ToUpper(keyword)})
+	}
 	if repoCond.IsValid() {
 		sess.In("repo_id", builder.Select("id").From("repository").Where(repoCond))
 	}
@@ -417,6 +463,7 @@ func GetMilestonesByRepoIDs(repoIDs []int64, page int, isClosed bool, sortType s
 		page,
 		isClosed,
 		sortType,
+		"",
 	)
 }
 
@@ -463,6 +510,38 @@ func GetMilestonesStatsByRepoCond(repoCond builder.Cond) (*MilestonesStats, erro
 	return stats, nil
 }
 
+// GetMilestonesStatsByRepoCondAndKw returns milestone statistic information for dashboard by given repo conditions and name keyword.
+func GetMilestonesStatsByRepoCondAndKw(repoCond builder.Cond, keyword string) (*MilestonesStats, error) {
+	var err error
+	stats := &MilestonesStats{}
+
+	sess := x.Where("is_closed = ?", false)
+	if len(keyword) > 0 {
+		sess = sess.And(builder.Like{"UPPER(name)", strings.ToUpper(keyword)})
+	}
+	if repoCond.IsValid() {
+		sess.And(builder.In("repo_id", builder.Select("id").From("repository").Where(repoCond)))
+	}
+	stats.OpenCount, err = sess.Count(new(Milestone))
+	if err != nil {
+		return nil, err
+	}
+
+	sess = x.Where("is_closed = ?", true)
+	if len(keyword) > 0 {
+		sess = sess.And(builder.Like{"UPPER(name)", strings.ToUpper(keyword)})
+	}
+	if repoCond.IsValid() {
+		sess.And(builder.In("repo_id", builder.Select("id").From("repository").Where(repoCond)))
+	}
+	stats.ClosedCount, err = sess.Count(new(Milestone))
+	if err != nil {
+		return nil, err
+	}
+
+	return stats, nil
+}
+
 func countRepoMilestones(e Engine, repoID int64) (int64, error) {
 	return e.
 		Where("repo_id=?", repoID).
@@ -483,6 +562,34 @@ func CountRepoClosedMilestones(repoID int64) (int64, error) {
 // CountMilestonesByRepoCond map from repo conditions to number of milestones matching the options`
 func CountMilestonesByRepoCond(repoCond builder.Cond, isClosed bool) (map[int64]int64, error) {
 	sess := x.Where("is_closed = ?", isClosed)
+	if repoCond.IsValid() {
+		sess.In("repo_id", builder.Select("id").From("repository").Where(repoCond))
+	}
+
+	countsSlice := make([]*struct {
+		RepoID int64
+		Count  int64
+	}, 0, 10)
+	if err := sess.GroupBy("repo_id").
+		Select("repo_id AS repo_id, COUNT(*) AS count").
+		Table("milestone").
+		Find(&countsSlice); err != nil {
+		return nil, err
+	}
+
+	countMap := make(map[int64]int64, len(countsSlice))
+	for _, c := range countsSlice {
+		countMap[c.RepoID] = c.Count
+	}
+	return countMap, nil
+}
+
+// CountMilestonesByRepoCondAndKw map from repo conditions and the keyword of milestones' name to number of milestones matching the options`
+func CountMilestonesByRepoCondAndKw(repoCond builder.Cond, keyword string, isClosed bool) (map[int64]int64, error) {
+	sess := x.Where("is_closed = ?", isClosed)
+	if len(keyword) > 0 {
+		sess = sess.And(builder.Like{"UPPER(name)", strings.ToUpper(keyword)})
+	}
 	if repoCond.IsValid() {
 		sess.In("repo_id", builder.Select("id").From("repository").Where(repoCond))
 	}
@@ -553,7 +660,7 @@ func (milestones MilestoneList) loadTotalTrackedTimes(e Engine) error {
 	if len(milestones) == 0 {
 		return nil
 	}
-	var trackedTimes = make(map[int64]int64, len(milestones))
+	trackedTimes := make(map[int64]int64, len(milestones))
 
 	// Get total tracked time by milestone_id
 	rows, err := e.Table("issue").
